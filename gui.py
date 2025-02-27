@@ -945,10 +945,12 @@ class CloudTrailLogExplorerGUI:
             self.root.after(0, lambda: self._update_transfer_complete(total, transferred))
             
         except Exception as e:
-            self.root.after(0, lambda: self._update_transfer_error(str(e)))
+            # Capture the error message to avoid lambda scope issues
+            error_msg = str(e)
+            self.root.after(0, lambda msg=error_msg: self._update_transfer_error(msg))
         finally:
             # Clear the active transfer manager reference when done
-            if self.active_transfer_manager == transfer_manager:
+            if hasattr(self, 'active_transfer_manager') and self.active_transfer_manager == transfer_manager:
                 self.active_transfer_manager = None
 
     def _perform_resume_transfer(self):
@@ -962,7 +964,9 @@ class CloudTrailLogExplorerGUI:
             self.root.after(0, lambda: self._update_transfer_complete(total, transferred))
             
         except Exception as e:
-            self.root.after(0, lambda: self._update_transfer_error(str(e)))
+            # Capture the error message to avoid lambda scope issues
+            error_msg = str(e)
+            self.root.after(0, lambda msg=error_msg: self._update_transfer_error(msg))
         finally:
             # Clear the active transfer manager reference when done
             self.active_transfer_manager = None
@@ -1037,8 +1041,33 @@ class CloudTrailLogExplorerGUI:
             manager_to_stop.stop_transfer()
             self.transfer_status_label.config(text="Stopping transfer... Please wait...")
             
-            # Enable start button, disable stop and resume
+            # Disable stop button while stopping
             self.stop_transfer_button.config(state=tk.DISABLED)
+            
+            # Schedule a check to update UI when stopped
+            self.root.after(500, lambda: self._check_transfer_stopped(manager_to_stop))
+    
+    def _check_transfer_stopped(self, manager, timeout_counter=0):
+        """Check if the transfer has stopped and update UI accordingly"""
+        # Check if transfer has stopped
+        if not manager.is_running or timeout_counter > 20:  # 10 second timeout (20 * 500ms)
+            # Transfer has stopped or timed out
+            self.transfer_status_label.config(text="Transfer stopped by user.")
+            
+            # Re-enable start button
+            self.start_transfer_button.config(state=tk.NORMAL)
+            
+            # Check if transfer can be resumed and enable resume button if possible
+            if manager.can_resume():
+                self.resume_transfer_button.config(state=tk.NORMAL)
+            else:
+                self.resume_transfer_button.config(state=tk.DISABLED)
+                
+            # Clear the active transfer manager
+            self.active_transfer_manager = None
+        else:
+            # Transfer is still running, check again after a delay
+            self.root.after(500, lambda: self._check_transfer_stopped(manager, timeout_counter + 1))
 
     def on_role_selected(self, event):
         """Handle role selection in the roles tree"""
