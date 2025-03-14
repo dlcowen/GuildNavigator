@@ -3,7 +3,7 @@ import botocore
 import os
 import configparser
 import json
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ProfileNotFound, NoCredentialsError
 
 class AWSAuthManager:
     def __init__(self):
@@ -52,21 +52,18 @@ class AWSAuthManager:
         ]
         return regions
     
-    def authenticate_with_profile(self, profile_name, region):
-        """Authenticate with AWS using a profile"""
+    def authenticate_with_profile(self, profile_name, region_name):
         try:
-            self.session = boto3.Session(profile_name=profile_name, region_name=region)
-            self.credentials = self.session.get_credentials()
-            self.region = region
-            
-            # Get the account ID
-            sts = self.session.client('sts')
-            identity = sts.get_caller_identity()
-            self.account_id = identity['Account']
-            
-            return True
+            self.session = boto3.Session(profile_name=profile_name, region_name=region_name)
+            sts_client = self.session.client('sts')
+            sts_client.get_caller_identity()  # Verify credentials
+            print(f"Authenticated successfully with profile '{profile_name}' in region '{region_name}'")
+        except ProfileNotFound:
+            raise Exception(f"Profile '{profile_name}' not found.")
+        except NoCredentialsError:
+            raise Exception(f"No credentials found for profile '{profile_name}'. Ensure SSO login is completed.")
         except Exception as e:
-            raise Exception(f"Failed to authenticate with profile {profile_name}: {str(e)}")
+            raise Exception(f"Authentication failed: {str(e)}")
     
     def authenticate_with_keys(self, access_key, secret_key, region):
         """Authenticate with AWS using access and secret keys"""
