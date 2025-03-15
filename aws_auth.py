@@ -223,4 +223,20 @@ class AWSAuthManager:
             return role_session
         
         except Exception as e:
-            raise Exception(f"Failed to assume role {role_arn}: {str(e)}") 
+            raise Exception(f"Failed to assume role {role_arn}: {str(e)}")
+
+    def test_current_credentials(self, trail_name, bucket_name):
+        """Test if current credentials can access CloudTrail logs and the associated S3 bucket."""
+        try:
+            cloudtrail_client = self.session.client('cloudtrail')
+            trails = cloudtrail_client.describe_trails(trailNameList=[trail_name])
+            if not trails['trailList']:
+                raise Exception("Trail not found or inaccessible.")
+
+            s3_client = self.session.client('s3')
+            s3_client.list_objects_v2(Bucket=bucket_name, MaxKeys=1)
+
+            return True
+        except Exception as e:
+            print(f"Credential test failed: {str(e)}")
+            return False 

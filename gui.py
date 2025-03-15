@@ -163,6 +163,10 @@ class CloudTrailLogExplorerGUI:
         self.use_selected_role_button.pack(side=tk.LEFT, padx=5)
         self.use_selected_role_button.config(state=tk.DISABLED)
         
+        # Test current credentials button
+        self.test_current_credentials_button = ttk.Button(button_frame, text="Test Current Credentials", command=self.test_current_credentials)
+        self.test_current_credentials_button.pack(side=tk.LEFT, padx=5)
+        
         # Role list with colored status
         frame_top = ttk.LabelFrame(roles_frame, text="Available Roles")
         frame_top.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
@@ -207,6 +211,18 @@ class CloudTrailLogExplorerGUI:
         accounts_frame = ttk.Frame(self.notebook)
         self.notebook.add(accounts_frame, text="AWS Accounts & Trails")
         
+        # Button frame
+        button_frame = ttk.Frame(accounts_frame)
+        button_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        discover_button = ttk.Button(button_frame, text="Discover Accounts & Trails", 
+                                   command=self.discover_accounts_and_trails)
+        discover_button.pack(side=tk.LEFT, padx=5)
+        
+        discover_with_testing_button = ttk.Button(button_frame, text="Discover & Test Current Access", 
+                                               command=self.discover_and_test_access)
+        discover_with_testing_button.pack(side=tk.LEFT, padx=5)
+        
         # Create a treeview for accounts and trails
         self.accounts_tree = ttk.Treeview(accounts_frame, columns=("account_id", "account_name", "trails_status"))
         self.accounts_tree.heading("#0", text="")
@@ -225,11 +241,6 @@ class CloudTrailLogExplorerGUI:
         scrollbar = ttk.Scrollbar(accounts_frame, orient="vertical", command=self.accounts_tree.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.accounts_tree.configure(yscrollcommand=scrollbar.set)
-        
-        # Refresh button
-        refresh_button = ttk.Button(accounts_frame, text="Refresh Accounts & Trails", 
-                                    command=self.discover_accounts_and_trails)
-        refresh_button.pack(pady=10)
         
         # Add binding for selecting a trail
         self.accounts_tree.bind("<<TreeviewSelect>>", self.on_trail_selected)
@@ -626,108 +637,105 @@ class CloudTrailLogExplorerGUI:
             status_node = self.accounts_tree.insert("", tk.END, text="⏳", values=("Discovering...", "", ""))
             self.root.update()
             
-            # Update status in the main window too
-            self.status_label.config(text="Starting AWS account discovery...")
+            # Update status in the main window
+            self.status_label.config(text="Starting AWS account discovery with access testing...")
             
-            # Display using role info if applicable
-            if hasattr(self, 'selected_role_arn'):
-                self.status_label.config(text=f"Starting AWS account discovery using role: {self.selected_role_arn}")
-            
-            self.root.after(0, lambda: self.status_label.config(text=f"Found {len(accounts)} AWS accounts. Discovering CloudTrail configurations..."))
-            self.root.after(0, lambda: self.accounts_tree.item(status_node, values=(f"Found {len(accounts)} accounts", "Discovering trails...", "")))
-            
-            self.root.update()
-            
-            # Start discovery in a separate thread to avoid freezing the UI
-            threading.Thread(target=self._perform_discovery, args=(status_node,), daemon=True).start()
+            # Start discovery in a separate thread
+            threading.Thread(target=self._perform_discovery_with_testing, args=(status_node,), daemon=True).start()
             
         except Exception as e:
             messagebox.showerror("Discovery Error", str(e))
     
-    def _perform_discovery(self, status_node):
+    def _perform_discovery_with_testing(self, status_node):
+        """Discover trails and test access in one operation"""
         try:
             # Update status
-            print("Starting AWS account discovery...")
             self.root.after(0, lambda: self.status_label.config(text="Discovering AWS accounts..."))
             self.root.after(0, lambda: self.accounts_tree.item(status_node, values=("Discovering AWS accounts...", "", "")))
             
-            # Collect all discovery data first
+            # Collect all discovery data
             discovery_data = []
             org_trails = []
             org_trail_accounts = set()
+            accessible_trails = []  # Track which trails are accessible with current credentials
             
-            # First, discover all accounts
+            # Discover all accounts
             accounts = self.discovery_manager.discover_accounts()
-            print(f"Found {len(accounts)} AWS accounts")
             
-            self.root.after(0, lambda: self.status_label.config(text=f"Found {len(accounts)} AWS accounts. Discovering CloudTrail configurations..."))
-            self.root.after(0, lambda: self.accounts_tree.item(status_node, values=(f"Found {len(accounts)} accounts", "Discovering trails...", "")))
+            self.root.after(0, lambda: self.status_label.config(text=f"Found {len(accounts)} AWS accounts. Discovering trails and testing access..."))
+            self.root.after(0, lambda: self.accounts_tree.item(status_node, values=(f"Found {len(accounts)} accounts", "Testing access...", "")))
             
-            # Then find all organizational trails
+            # Find all trails and test access
             for i, account in enumerate(accounts):
                 account_id = account["AccountId"]
                 account_name = account.get("Name", "Unknown")
                 
-                # Update status for each account
-                print(f"[{i+1}/{len(accounts)}] Examining account {account_id} ({account_name})...")
+                # Update status
                 self.root.after(0, lambda aid=account_id, an=account_name, i=i, total=len(accounts): 
-                    self.status_label.config(text=f"Checking account {aid} ({an})... [{i+1}/{total}]"))
-                self.root.after(0, lambda aid=account_id, i=i, total=len(accounts): 
-                    self.accounts_tree.item(status_node, values=(f"Checking account {aid}", f"Progress: {i+1}/{total}", "")))
+                    self.status_label.config(text=f"Checking account {aid} ({an}) & testing access... [{i+1}/{total}]"))
                 
+                # Discover trails for this account
                 trails = self.discovery_manager.discover_trails(account_id)
-                
-                print(f"  - Found {len(trails)} trails for account {account_id}")
                 
                 # Store organizational trails
                 for trail in trails:
                     if trail.get("IsOrganizationTrail", False):
-                        print(f"  - Found organizational trail: {trail['Name']} in account {account_id}")
                         org_trails.append({
                             "owner_account_id": account_id,
                             "trail_name": trail["Name"],
                             "trail_data": trail
                         })
-                        # This trail covers all accounts in the organization
                         org_trail_accounts.add(account_id)
-            
-            print(f"Found {len(org_trails)} organizational trails")
-            
-            # Update status before processing data
-            self.root.after(0, lambda: self.status_label.config(text="Processing CloudTrail data..."))
-            self.root.after(0, lambda: self.accounts_tree.item(status_node, values=("Processing data", "", "")))
-            
-            # Now process each account with the knowledge of organizational trails
-            for account in accounts:
-                account_id = account["AccountId"]
-                account_name = account.get("Name", "Unknown")
+                    
+                    # Test access to this trail with current credentials
+                    try:
+                        cloudtrail_access = self.discovery_manager.test_cloudtrail_access(self.auth_manager.session)
+                        s3_access = False
+                        
+                        if cloudtrail_access and "S3BucketName" in trail:
+                            bucket_name = trail["S3BucketName"]
+                            s3_access = self.discovery_manager.test_s3_access_for_bucket(self.auth_manager.session, bucket_name)
+                        
+                        if cloudtrail_access and s3_access:
+                            accessible_trails.append({
+                                "account_id": account_id, 
+                                "trail_name": trail["Name"],
+                                "storage_location": trail.get("S3BucketName", "Unknown"),
+                                "access_level": "full"
+                            })
+                        elif cloudtrail_access:
+                            accessible_trails.append({
+                                "account_id": account_id, 
+                                "trail_name": trail["Name"],
+                                "storage_location": trail.get("S3BucketName", "Unknown"),
+                                "access_level": "partial"
+                            })
+                    except Exception as e:
+                        # Failed to test access, continue with discovery
+                        pass
                 
+                # Process account data
                 account_data = {
                     "account_id": account_id,
                     "account_name": account_name,
-                    "trails": [],
+                    "trails": trails,
                     "covered_by_org_trail": False,
                     "org_trail_details": []
                 }
                 
-                # Add regular trails for this account
-                trails = self.discovery_manager.discover_trails(account_id)
-                account_data["trails"] = trails
-                
-                # Check if this account is covered by an organizational trail
+                # Check for organizational trail coverage
                 if org_trails:
-                    # All accounts in the organization are covered by org trails
                     account_data["covered_by_org_trail"] = True
                     account_data["org_trail_details"] = org_trails
                 
                 discovery_data.append(account_data)
             
-            # Clear status node now that we're ready to show real data
+            # Clear status node
             self.root.after(0, lambda: self.accounts_tree.delete(status_node))
-            self.root.after(0, lambda: self.status_label.config(text=f"Found {len(accounts)} accounts with {len(org_trails)} organizational trails"))
             
-            # Now update the UI with the collected data
+            # Update UI with discovery results and access information
             def update_ui():
+                # Add accounts and trails to the tree view
                 for account_data in discovery_data:
                     account_id = account_data["account_id"]
                     account_name = account_data["account_name"]
@@ -735,7 +743,7 @@ class CloudTrailLogExplorerGUI:
                     covered_by_org_trail = account_data["covered_by_org_trail"]
                     org_trail_details = account_data["org_trail_details"]
                     
-                    # Determine the status message
+                    # Determine status message
                     if trails:
                         status_message = f"{len(trails)} trails found"
                     elif covered_by_org_trail:
@@ -743,17 +751,15 @@ class CloudTrailLogExplorerGUI:
                     else:
                         status_message = "NO TRAILS"
                     
-                    # Add account as a parent node
+                    # Add account node
                     account_node = self.accounts_tree.insert("", tk.END, text="📁", 
                                                           values=(account_id, account_name, status_message))
                     
-                    # Configure colors based on trail status
+                    # Set color based on trail status
                     if not trails and not covered_by_org_trail:
-                        # No trails and not covered by org trail - show in red
                         self.accounts_tree.item(account_node, tags=("no_trails",))
                         self.accounts_tree.tag_configure("no_trails", foreground="red")
                     elif covered_by_org_trail and not trails:
-                        # Covered by org trail but no own trails - show in light green
                         self.accounts_tree.item(account_node, tags=("covered_by_org",))
                         self.accounts_tree.tag_configure("covered_by_org", foreground="#008800")
                     
@@ -763,18 +769,51 @@ class CloudTrailLogExplorerGUI:
                         storage_location = trail.get("S3BucketName", "Unknown")
                         is_org_trail = trail.get("IsOrganizationTrail", False)
                         
+                        # Check if this trail is accessible with current credentials
+                        access_tag = None
+                        for accessible in accessible_trails:
+                            if (accessible["account_id"] == account_id and 
+                                accessible["trail_name"] == trail_name):
+                                access_tag = f"accessible_{accessible['access_level']}"
+                                break
+                        
+                        # Add trail with appropriate icon and tag
                         if is_org_trail:
-                            # Mark organizational trails in bright green
-                            trail_node = self.accounts_tree.insert(account_node, tk.END, text="🟢", 
-                                                               values=(trail_name, "Org Trail", storage_location))
-                            self.accounts_tree.item(trail_node, tags=("org_trail",))
-                            self.accounts_tree.tag_configure("org_trail", foreground="#00AA00")
+                            # Organizational trail
+                            trail_icon = "🟢"
+                            trail_type = "Org Trail"
+                            tag = "org_trail"
                         else:
-                            self.accounts_tree.insert(account_node, tk.END, text="📊", 
-                                                  values=(trail_name, "Account Trail", storage_location))
+                            # Regular trail
+                            trail_icon = "📊"
+                            trail_type = "Account Trail"
+                            tag = None
+                        
+                        # Add accessible icon if applicable
+                        if access_tag == "accessible_full":
+                            trail_icon = "✅ " + trail_icon
+                            trail_type += " (Fully Accessible)"
+                            tag = "accessible_full"
+                        elif access_tag == "accessible_partial":
+                            trail_icon = "⚠️ " + trail_icon
+                            trail_type += " (Partially Accessible)"
+                            tag = "accessible_partial"
+                        
+                        # Add the trail node
+                        trail_node = self.accounts_tree.insert(account_node, tk.END, text=trail_icon, 
+                                                             values=(trail_name, trail_type, storage_location))
+                        
+                        # Apply appropriate tag/color
+                        if tag:
+                            self.accounts_tree.item(trail_node, tags=(tag,))
+                            if tag == "org_trail":
+                                self.accounts_tree.tag_configure(tag, foreground="#00AA00")
+                            elif tag == "accessible_full":
+                                self.accounts_tree.tag_configure(tag, foreground="#008800", background="#EEFFEE")
+                            elif tag == "accessible_partial":
+                                self.accounts_tree.tag_configure(tag, foreground="#AA6600", background="#FFFFEE")
                     
-                    # If this account is covered by an organizational trail but doesn't own it
-                    # show which org trails cover it
+                    # Add organizational trail references if applicable
                     if covered_by_org_trail and account_id not in org_trail_accounts:
                         for org_trail in org_trail_details:
                             if org_trail["owner_account_id"] != account_id:
@@ -790,21 +829,69 @@ class CloudTrailLogExplorerGUI:
                                 self.accounts_tree.item(reference_node, tags=("org_trail_ref",))
                                 self.accounts_tree.tag_configure("org_trail_ref", foreground="#0088AA")
             
-            # Expand all account nodes initially
-            for item in self.accounts_tree.get_children():
-                self.accounts_tree.item(item, open=True)
+            # Show a summary of accessible trails
+            if accessible_trails:
+                full_access = sum(1 for t in accessible_trails if t["access_level"] == "full")
+                partial_access = sum(1 for t in accessible_trails if t["access_level"] == "partial")
+                
+                if full_access > 0:
+                    self.status_label.config(
+                        text=f"✅ Found {len(accounts)} accounts, {sum(len(a['trails']) for a in discovery_data)} trails. "
+                             f"Current credentials have FULL ACCESS to {full_access} trails."
+                    )
+                    
+                    # Also show a popup notifying the user
+                    messagebox.showinfo(
+                        "Access Test Results", 
+                        f"Your current credentials have FULL ACCESS to {full_access} trails.\n\n"
+                        f"These trails are marked with ✅ in the list.\n"
+                        f"You can use these trails directly without assuming a role."
+                    )
+                elif partial_access > 0:
+                    self.status_label.config(
+                        text=f"⚠️ Found {len(accounts)} accounts, {sum(len(a['trails']) for a in discovery_data)} trails. "
+                             f"Current credentials have PARTIAL ACCESS to {partial_access} trails."
+                    )
+                    
+                    # Show warning
+                    messagebox.showwarning(
+                        "Access Test Results", 
+                        f"Your current credentials have PARTIAL ACCESS to {partial_access} trails.\n\n"
+                        f"These trails are marked with ⚠️ in the list.\n"
+                        f"You may need to assume a role for full access to S3 data."
+                    )
+                
+                # Expand accessible accounts
+                for item in self.accounts_tree.get_children():
+                    account_id = self.accounts_tree.item(item, "values")[0]
+                    # Check if this account has accessible trails
+                    has_accessible = any(t["account_id"] == account_id for t in accessible_trails)
+                    if has_accessible:
+                        self.accounts_tree.item(item, open=True)
+            else:
+                self.status_label.config(
+                    text=f"Found {len(accounts)} accounts, {sum(len(a['trails']) for a in discovery_data)} trails. "
+                         f"No trails accessible with current credentials."
+                )
+                
+                # Show info message
+                messagebox.showinfo(
+                    "Access Test Results", 
+                    "Your current credentials do not have access to any CloudTrail trails.\n\n"
+                    "You will need to assume a role to access CloudTrail data."
+                )
+                
+                # Switch to the roles tab after the message
+                self.notebook.select(1)  # Roles tab
         
-            # Schedule the UI update on the main thread
+            # Schedule UI update
             self.root.after(0, update_ui)
             
-            # Final status update after UI is populated
-            self.status_label.config(text=f"Discovery complete: {len(accounts)} accounts, {sum(len(a['trails']) for a in discovery_data)} trails")
-            
         except Exception as e:
-            print(f"ERROR during discovery: {str(e)}")
+            error_msg = str(e)
             self.root.after(0, lambda: self.status_label.config(text=f"Error: {str(e)}"))
             self.root.after(0, lambda: messagebox.showerror("Discovery Error", str(e)))
-    
+
     def on_trail_selected(self, event):
         selected_items = self.accounts_tree.selection()
         if not selected_items:
@@ -1510,3 +1597,118 @@ class CloudTrailLogExplorerGUI:
                     failures_tree.insert("", tk.END, values=(key, error, timestamp))
         except Exception as e:
             failures_tree.insert("", tk.END, values=("Error refreshing", str(e), ""))
+
+    def test_current_credentials(self):
+        """Test if current AWS credentials can access CloudTrail logs without assuming a role"""
+        
+        # First check if a trail has been selected
+        if hasattr(self, 'selected_trail_info'):
+            # We already have a selected trail, use its information
+            account_id = self.selected_trail_info["account_id"]
+            trail_name = self.selected_trail_info["trail_name"]
+            storage_location = self.selected_trail_info["storage_location"]
+            
+        else:
+            # No trail selected, ask the user to select one first
+            messagebox.showinfo("Select Trail First", 
+                              "Please select a CloudTrail trail from the Accounts tab first, then try again.")
+            
+            # Switch to the accounts tab to help user select a trail
+            self.notebook.select(2)  # Index 2 should be the Accounts tab
+            return
+        
+        # Update status to show we're testing
+        self.roles_status_label.config(text=f"Testing access to trail '{trail_name}' with current credentials...")
+        self.root.update()
+        
+        # Start testing in a background thread to prevent UI freezing
+        threading.Thread(target=self._perform_credentials_test, 
+                       args=(account_id, trail_name, storage_location), 
+                       daemon=True).start()
+
+    def _perform_credentials_test(self, account_id, trail_name, bucket_name):
+        """Perform the actual credential test in a background thread"""
+        try:
+            # First verify our discovery manager exists
+            if not self.discovery_manager:
+                self.discovery_manager = AWSDiscoveryManager(self.auth_manager.session)
+            
+            # Test CloudTrail access with current session
+            cloudtrail_access = self.discovery_manager.test_cloudtrail_access(self.auth_manager.session)
+            
+            # Test S3 access with current session
+            s3_access = self.discovery_manager.test_s3_access_for_cloudtrail(self.auth_manager.session)
+            
+            # Update UI based on results
+            if cloudtrail_access and s3_access:
+                # Both tests succeeded
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Success", 
+                    f"Current credentials have full access to CloudTrail trail '{trail_name}' and S3 bucket '{bucket_name}'.\n\nNo role assumption needed."
+                ))
+                
+                # Navigate directly to find logs screen (accounts tab)
+                self.root.after(0, lambda: self.notebook.select(2))
+                
+                # Update status
+                self.root.after(0, lambda: self.roles_status_label.config(
+                    text="✓ Current credentials have full access. No role needed."
+                ))
+                
+            elif cloudtrail_access:
+                # Only CloudTrail access
+                self.root.after(0, lambda: messagebox.showwarning(
+                    "Partial Access", 
+                    f"Current credentials can access CloudTrail trail '{trail_name}' but NOT S3 bucket '{bucket_name}'.\n\nYou may need to assume a role with S3 access."
+                ))
+                
+                # Update status
+                self.root.after(0, lambda: self.roles_status_label.config(
+                    text="⚠ Current credentials have only partial access (CloudTrail but not S3)."
+                ))
+                
+            else:
+                # No access
+                self.root.after(0, lambda: messagebox.showerror(
+                    "No Access", 
+                    "Current credentials do not have access to CloudTrail or S3.\n\nPlease discover and assume a role with proper permissions."
+                ))
+                
+                # Update status
+                self.root.after(0, lambda: self.roles_status_label.config(
+                    text="✗ Current credentials do not have sufficient access."
+                ))
+                
+        except Exception as e:
+            error_msg = str(e)
+            # Update UI with error
+            self.root.after(0, lambda: self.roles_status_label.config(
+                text=f"Error testing credentials: {error_msg}"
+            ))
+            self.root.after(0, lambda: messagebox.showerror(
+                "Error", f"Failed to test credentials: {error_msg}"
+            ))
+
+    def discover_and_test_access(self):
+        """Discover accounts/trails and automatically test current credentials"""
+        if not self.discovery_manager:
+            messagebox.showerror("Error", "Please connect to AWS first")
+            return
+        
+        # Clear existing items
+        for item in self.accounts_tree.get_children():
+            self.accounts_tree.delete(item)
+        
+        try:
+            # Initial discovery status
+            status_node = self.accounts_tree.insert("", tk.END, text="⏳", values=("Discovering...", "", ""))
+            self.root.update()
+            
+            # Update status in the main window
+            self.status_label.config(text="Starting AWS account discovery with access testing...")
+            
+            # Start discovery in a separate thread
+            threading.Thread(target=self._perform_discovery_with_testing, args=(status_node,), daemon=True).start()
+            
+        except Exception as e:
+            messagebox.showerror("Discovery Error", str(e))
